@@ -140,6 +140,95 @@ def fallback_rewrite(text, style):
         ]
         return concise_options[hash(text) % len(concise_options)]
 
+# ============================================
+# NEW FUNCTION: Text Summarization
+# ============================================
+def summarize_text_huggingface(text):
+    """Summarize text using Hugging Face API (facebook/bart-large-cnn model)"""
+    
+    # Use BART model for summarization
+    API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "max_length": 130,
+            "min_length": 30,
+            "do_sample": False
+        }
+    }
+    
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                summary = result[0].get('summary_text', '').strip()
+                if summary:
+                    return summary
+                return "Unable to generate summary"
+            else:
+                raise Exception("No summary generated")
+                
+        elif response.status_code == 503:
+            # Model is loading, wait and retry
+            time.sleep(10)
+            return summarize_text_huggingface(text)
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+    except Exception as e:
+        # Fallback to simple summarization
+        words = text.split()
+        if len(words) > 20:
+            return ' '.join(words[:20]) + '...'
+        return text
+
+# ============================================
+# NEW FUNCTION: Sentiment Analysis
+# ============================================
+def analyze_sentiment_huggingface(text):
+    """Analyze sentiment using Hugging Face API (distilbert-base-uncased-finetuned-sst-2-english model)"""
+    
+    # Use DistilBERT model for sentiment analysis
+    API_URL = "https://api-inference.huggingface.co/models/distilbert-base-uncased-finetuned-sst-2-english"
+    headers = {"Authorization": f"Bearer {HUGGINGFACE_API_KEY}"}
+    
+    payload = {
+        "inputs": text
+    }
+    
+    try:
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if isinstance(result, list) and len(result) > 0:
+                # Get the highest scoring sentiment
+                sentiments = result[0]
+                if isinstance(sentiments, list) and len(sentiments) > 0:
+                    top_sentiment = max(sentiments, key=lambda x: x['score'])
+                    return {
+                        'label': top_sentiment['label'].capitalize(),
+                        'score': round(top_sentiment['score'], 4)
+                    }
+                return {'label': 'Neutral', 'score': 0.5}
+            else:
+                raise Exception("No sentiment data returned")
+                
+        elif response.status_code == 503:
+            # Model is loading, wait and retry
+            time.sleep(10)
+            return analyze_sentiment_huggingface(text)
+        else:
+            raise Exception(f"API request failed with status {response.status_code}: {response.text}")
+            
+    except Exception as e:
+        # Fallback to neutral sentiment
+        return {'label': 'Neutral', 'score': 0.5}
+
 @app.route('/')
 def home():
     return jsonify({
@@ -147,7 +236,9 @@ def home():
         'provider': 'Hugging Face',
         'endpoints': {
             'health': '/api/health (GET)',
-            'rewrite': '/api/rewrite (POST)'
+            'rewrite': '/api/rewrite (POST)',
+            'summarize': '/api/summarize (POST)',
+            'sentiment': '/api/sentiment (POST)'
         }
     })
 
@@ -200,12 +291,107 @@ def rewrite_headline():
             'error': f'An error occurred: {str(e)}'
         }), 500
 
+# ============================================
+# NEW ENDPOINT: Summarization
+# ============================================
+@app.route('/api/summarize', methods=['POST'])
+def summarize_text():
+    """Endpoint to summarize text using Hugging Face API"""
+    try:
+        # Get input data
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'No text provided'
+            }), 400
+        
+        text = data['text'].strip()
+        
+        # Validate input
+        if len(text) < 10:
+            return jsonify({
+                'success': False,
+                'error': 'Text must be at least 10 characters long for summarization'
+            }), 400
+        
+        if len(text) > 1000:
+            return jsonify({
+                'success': False,
+                'error': 'Text must be less than 1000 characters'
+            }), 400
+        
+        # Generate summary using Hugging Face
+        summary = summarize_text_huggingface(text)
+        
+        # Return results
+        return jsonify({
+            'success': True,
+            'original': text,
+            'summary': summary
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'An error occurred: {str(e)}'
+        }), 500
+
+# ============================================
+# NEW ENDPOINT: Sentiment Analysis
+# ============================================
+@app.route('/api/sentiment', methods=['POST'])
+def analyze_sentiment():
+    """Endpoint to analyze sentiment using Hugging Face API"""
+    try:
+        # Get input data
+        data = request.get_json()
+        
+        if not data or 'text' not in data:
+            return jsonify({
+                'success': False,
+                'error': 'No text provided'
+            }), 400
+        
+        text = data['text'].strip()
+        
+        # Validate input
+        if len(text) < 5:
+            return jsonify({
+                'success': False,
+                'error': 'Text must be at least 5 characters long'
+            }), 400
+        
+        if len(text) > 1000:
+            return jsonify({
+                'success': False,
+                'error': 'Text must be less than 1000 characters'
+            }), 400
+        
+        # Analyze sentiment using Hugging Face
+        sentiment_result = analyze_sentiment_huggingface(text)
+        
+        # Return results
+        return jsonify({
+            'success': True,
+            'original': text,
+            'sentiment': sentiment_result
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'An error occurred: {str(e)}'
+        }), 500
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({
         'status': 'healthy',
         'message': 'Headline Rewriter API is running with Hugging Face',
-        'provider': 'Hugging Face'
+        'provider': 'Hugging Face',
+        'features': ['rewrite', 'summarize', 'sentiment']
     })
 
 if __name__ == '__main__':
@@ -223,5 +409,7 @@ if __name__ == '__main__':
     print("  GET  http://localhost:5000/")
     print("  GET  http://localhost:5000/api/health") 
     print("  POST http://localhost:5000/api/rewrite")
+    print("  POST http://localhost:5000/api/summarize")
+    print("  POST http://localhost:5000/api/sentiment")
     
     app.run(debug=True, host='0.0.0.0', port=5000)
